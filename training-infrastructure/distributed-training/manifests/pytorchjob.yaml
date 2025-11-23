@@ -1,0 +1,174 @@
+# PyTorchJob using Kubeflow Training Operator
+#
+# Install the operator first:
+# kubectl apply -k "github.com/kubeflow/training-operator/manifests/overlays/standalone"
+
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: distributed-training
+  namespace: training
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: pytorch-training
+            role: master
+        spec:
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu
+                        operator: In
+                        values:
+                          - "true"
+          containers:
+            - name: pytorch
+              image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+              command:
+                - python
+                - -m
+                - torch.distributed.run
+                - --nnodes=$(WORLD_SIZE)
+                - --node_rank=$(RANK)
+                - --nproc_per_node=4
+                - --master_addr=$(MASTER_ADDR)
+                - --master_port=$(MASTER_PORT)
+                - /scripts/train_ddp.py
+                - --epochs=10
+                - --batch-size=32
+                - --checkpoint-dir=/checkpoints
+              env:
+                - name: NCCL_DEBUG
+                  value: "WARN"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+              resources:
+                requests:
+                  cpu: "8"
+                  memory: "64Gi"
+                  nvidia.com/gpu: 4
+                limits:
+                  cpu: "16"
+                  memory: "128Gi"
+                  nvidia.com/gpu: 4
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: checkpoints
+                  mountPath: /checkpoints
+                - name: data
+                  mountPath: /data
+                - name: dshm
+                  mountPath: /dev/shm
+          volumes:
+            - name: scripts
+              configMap:
+                name: training-scripts
+            - name: checkpoints
+              persistentVolumeClaim:
+                claimName: training-checkpoints
+            - name: data
+              persistentVolumeClaim:
+                claimName: training-data
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi
+
+    Worker:
+      replicas: 3  # 3 workers + 1 master = 4 nodes total
+      restartPolicy: OnFailure
+      template:
+        metadata:
+          labels:
+            app: pytorch-training
+            role: worker
+        spec:
+          tolerations:
+            - key: nvidia.com/gpu
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: nvidia.com/gpu
+                        operator: In
+                        values:
+                          - "true"
+            # Spread workers across nodes
+            podAntiAffinity:
+              preferredDuringSchedulingIgnoredDuringExecution:
+                - weight: 100
+                  podAffinityTerm:
+                    labelSelector:
+                      matchLabels:
+                        app: pytorch-training
+                    topologyKey: kubernetes.io/hostname
+          containers:
+            - name: pytorch
+              image: pytorch/pytorch:2.2.0-cuda12.1-cudnn8-runtime
+              command:
+                - python
+                - -m
+                - torch.distributed.run
+                - --nnodes=$(WORLD_SIZE)
+                - --node_rank=$(RANK)
+                - --nproc_per_node=4
+                - --master_addr=$(MASTER_ADDR)
+                - --master_port=$(MASTER_PORT)
+                - /scripts/train_ddp.py
+                - --epochs=10
+                - --batch-size=32
+                - --checkpoint-dir=/checkpoints
+              env:
+                - name: NCCL_DEBUG
+                  value: "WARN"
+                - name: NCCL_SOCKET_IFNAME
+                  value: "eth0"
+              resources:
+                requests:
+                  cpu: "8"
+                  memory: "64Gi"
+                  nvidia.com/gpu: 4
+                limits:
+                  cpu: "16"
+                  memory: "128Gi"
+                  nvidia.com/gpu: 4
+              volumeMounts:
+                - name: scripts
+                  mountPath: /scripts
+                - name: checkpoints
+                  mountPath: /checkpoints
+                - name: data
+                  mountPath: /data
+                - name: dshm
+                  mountPath: /dev/shm
+          volumes:
+            - name: scripts
+              configMap:
+                name: training-scripts
+            - name: checkpoints
+              persistentVolumeClaim:
+                claimName: training-checkpoints
+            - name: data
+              persistentVolumeClaim:
+                claimName: training-data
+            - name: dshm
+              emptyDir:
+                medium: Memory
+                sizeLimit: 32Gi

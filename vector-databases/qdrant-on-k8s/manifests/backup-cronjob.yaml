@@ -1,0 +1,85 @@
+# Automated backup CronJob for Qdrant
+
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qdrant-backup
+  namespace: vector-db
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: amazon/aws-cli:2.15.0
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+
+                  TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+                  QDRANT_HOST="qdrant.vector-db.svc.cluster.local"
+                  BUCKET="${S3_BUCKET}"
+                  PREFIX="${S3_PREFIX:-qdrant-backups}"
+
+                  echo "Starting backup at ${TIMESTAMP}"
+
+                  # Get list of collections
+                  COLLECTIONS=$(curl -s "http://${QDRANT_HOST}:6333/collections" | jq -r '.result.collections[].name')
+
+                  for COLLECTION in ${COLLECTIONS}; do
+                    echo "Creating snapshot for collection: ${COLLECTION}"
+
+                    # Create snapshot
+                    SNAPSHOT=$(curl -s -X POST "http://${QDRANT_HOST}:6333/collections/${COLLECTION}/snapshots" | jq -r '.result.name')
+
+                    if [ -z "${SNAPSHOT}" ] || [ "${SNAPSHOT}" = "null" ]; then
+                      echo "Failed to create snapshot for ${COLLECTION}"
+                      continue
+                    fi
+
+                    echo "Downloading snapshot: ${SNAPSHOT}"
+                    curl -s "http://${QDRANT_HOST}:6333/collections/${COLLECTION}/snapshots/${SNAPSHOT}" -o "/tmp/${COLLECTION}-${SNAPSHOT}"
+
+                    echo "Uploading to S3"
+                    aws s3 cp "/tmp/${COLLECTION}-${SNAPSHOT}" "s3://${BUCKET}/${PREFIX}/${TIMESTAMP}/${COLLECTION}-${SNAPSHOT}"
+
+                    # Clean up local file
+                    rm "/tmp/${COLLECTION}-${SNAPSHOT}"
+
+                    echo "Backup complete for ${COLLECTION}"
+                  done
+
+                  # Clean up old backups (keep last 7 days)
+                  echo "Cleaning up old backups..."
+                  aws s3 ls "s3://${BUCKET}/${PREFIX}/" | while read -r line; do
+                    BACKUP_DATE=$(echo "$line" | awk '{print $1}')
+                    BACKUP_DIR=$(echo "$line" | awk '{print $2}')
+                    if [ -n "${BACKUP_DATE}" ] && [ "$(date -d "${BACKUP_DATE}" +%s)" -lt "$(date -d '7 days ago' +%s)" ]; then
+                      echo "Deleting old backup: ${BACKUP_DIR}"
+                      aws s3 rm "s3://${BUCKET}/${PREFIX}/${BACKUP_DIR}" --recursive
+                    fi
+                  done
+
+                  echo "Backup job completed"
+              env:
+                - name: S3_BUCKET
+                  value: "your-backup-bucket"
+                - name: S3_PREFIX
+                  value: "qdrant-backups"
+                - name: AWS_DEFAULT_REGION
+                  value: "us-east-1"
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

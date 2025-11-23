@@ -1,0 +1,126 @@
+# Qdrant StatefulSet for production deployment
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: qdrant
+  namespace: vector-db
+  labels:
+    app: qdrant
+spec:
+  serviceName: qdrant-headless
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: qdrant
+  template:
+    metadata:
+      labels:
+        app: qdrant
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "6333"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: qdrant
+              topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.8.1
+          ports:
+            - containerPort: 6333
+              name: http
+            - containerPort: 6334
+              name: grpc
+            - containerPort: 6335
+              name: p2p
+          env:
+            - name: QDRANT_CLUSTER_ENABLED
+              value: "true"
+            - name: QDRANT_SERVICE_URI
+              value: "http://qdrant-headless:6335"
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+          volumeMounts:
+            - name: qdrant-storage
+              mountPath: /qdrant/storage
+            - name: config
+              mountPath: /qdrant/config/config.yaml
+              subPath: config.yaml
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 6333
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 6333
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+      volumes:
+        - name: config
+          configMap:
+            name: qdrant-config
+
+  volumeClaimTemplates:
+    - metadata:
+        name: qdrant-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant-headless
+  namespace: vector-db
+  labels:
+    app: qdrant
+spec:
+  clusterIP: None
+  ports:
+    - port: 6333
+      name: http
+    - port: 6334
+      name: grpc
+    - port: 6335
+      name: p2p
+  selector:
+    app: qdrant
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: qdrant
+  namespace: vector-db
+  labels:
+    app: qdrant
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6333
+      name: http
+      targetPort: 6333
+    - port: 6334
+      name: grpc
+      targetPort: 6334
+  selector:
+    app: qdrant
