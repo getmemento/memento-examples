@@ -1,0 +1,88 @@
+# Training Job Example
+#
+# Batch priority job that can be preempted by inference workloads.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-training
+  labels:
+    workload-type: training
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 86400  # Clean up after 24 hours
+  template:
+    metadata:
+      labels:
+        workload-type: training
+    spec:
+      # Lower priority - can be preempted by inference
+      priorityClassName: gpu-batch
+
+      restartPolicy: OnFailure
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+        - key: workload-type
+          operator: Equal
+          value: training
+          effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: workload-type
+                    operator: In
+                    values:
+                      - training
+                  - key: nvidia.com/gpu
+                    operator: In
+                    values:
+                      - "true"
+
+      containers:
+        - name: trainer
+          image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+          command:
+            - python
+            - -m
+            - torch.distributed.run
+            - --nproc_per_node=4
+            - train.py
+          resources:
+            requests:
+              cpu: "16"
+              memory: "64Gi"
+              nvidia.com/gpu: 4
+            limits:
+              cpu: "32"
+              memory: "128Gi"
+              nvidia.com/gpu: 4
+          env:
+            - name: NCCL_DEBUG
+              value: INFO
+          volumeMounts:
+            - name: training-data
+              mountPath: /data
+            - name: checkpoints
+              mountPath: /checkpoints
+            - name: dshm
+              mountPath: /dev/shm
+
+      volumes:
+        - name: training-data
+          persistentVolumeClaim:
+            claimName: training-data-pvc
+        - name: checkpoints
+          persistentVolumeClaim:
+            claimName: checkpoints-pvc
+        # Shared memory for NCCL
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
