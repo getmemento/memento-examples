@@ -1,0 +1,77 @@
+# Recording Rules for Cost Attribution
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cost-recording-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  groups:
+    - name: cost-recording
+      interval: 1m
+      rules:
+        # GPU hours by namespace
+        - record: cost:gpu_hours:by_namespace
+          expr: |
+            sum by (namespace) (
+              kube_pod_container_resource_requests{resource="nvidia_com_gpu"}
+            ) / 60  # Convert to hours
+
+        # GPU hours by team (via namespace labels)
+        - record: cost:gpu_hours:by_team
+          expr: |
+            sum by (team) (
+              cost:gpu_hours:by_namespace
+              * on(namespace) group_left(team)
+              kube_namespace_labels{label_team!=""}
+            )
+
+        # Estimated GPU cost by namespace
+        # Adjust the multiplier based on your instance costs
+        # Example: g5.xlarge = ~£0.80/GPU-hour
+        - record: cost:gpu_estimated_hourly:by_namespace
+          expr: cost:gpu_hours:by_namespace * 0.80
+
+        - record: cost:gpu_estimated_hourly:by_team
+          expr: cost:gpu_hours:by_team * 0.80
+
+        # Token throughput by namespace
+        - record: cost:tokens_generated:by_namespace
+          expr: |
+            sum by (namespace) (
+              rate(vllm:generation_tokens_total[5m])
+            ) * 3600  # Tokens per hour
+
+        # Cost per 1000 tokens by namespace
+        - record: cost:per_1k_tokens:by_namespace
+          expr: |
+            cost:gpu_estimated_hourly:by_namespace /
+            (cost:tokens_generated:by_namespace / 1000)
+
+        # Idle GPU cost (allocated but not utilised)
+        - record: cost:gpu_idle_percent:by_namespace
+          expr: |
+            1 - (
+              sum by (namespace) (DCGM_FI_DEV_GPU_UTIL) /
+              (count by (namespace) (DCGM_FI_DEV_GPU_UTIL) * 100)
+            )
+
+        - record: cost:gpu_idle_hourly:by_namespace
+          expr: |
+            cost:gpu_estimated_hourly:by_namespace * cost:gpu_idle_percent:by_namespace
+
+        # Monthly projections (assuming current rate)
+        - record: cost:gpu_monthly_projection:by_namespace
+          expr: cost:gpu_estimated_hourly:by_namespace * 720
+
+        - record: cost:gpu_monthly_projection:by_team
+          expr: cost:gpu_estimated_hourly:by_team * 720
+
+        # Total cluster cost
+        - record: cost:gpu_total_hourly
+          expr: sum(cost:gpu_estimated_hourly:by_namespace)
+
+        - record: cost:gpu_total_monthly_projection
+          expr: cost:gpu_total_hourly * 720

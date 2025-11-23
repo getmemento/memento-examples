@@ -1,0 +1,93 @@
+# Training Job on Spot with Checkpointing
+#
+# Saves checkpoints to S3 for recovery after interruption.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: training-spot
+  namespace: training
+spec:
+  backoffLimit: 10  # Retry on spot interruption
+  template:
+    metadata:
+      labels:
+        workload-type: training
+        capacity-type: spot
+    spec:
+      restartPolicy: OnFailure
+
+      tolerations:
+        - key: capacity-type
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: capacity-type
+                    operator: In
+                    values:
+                      - spot
+
+      # Allow time for checkpoint save
+      terminationGracePeriodSeconds: 300
+
+      containers:
+        - name: trainer
+          image: pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+          command:
+            - python
+            - train.py
+            - --checkpoint-dir=/checkpoints
+            - --resume-from-latest
+          resources:
+            requests:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "16"
+              memory: "64Gi"
+              nvidia.com/gpu: 1
+          env:
+            # Signal to training script to checkpoint on SIGTERM
+            - name: SPOT_INTERRUPT_CHECKPOINT
+              value: "true"
+            - name: S3_CHECKPOINT_BUCKET
+              value: "your-checkpoint-bucket"
+          volumeMounts:
+            - name: checkpoints
+              mountPath: /checkpoints
+            - name: dshm
+              mountPath: /dev/shm
+          # Save checkpoint before termination
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    # Signal training to save checkpoint
+                    kill -SIGTERM 1
+                    # Wait for checkpoint to save
+                    sleep 60
+                    # Sync to S3
+                    aws s3 sync /checkpoints s3://${S3_CHECKPOINT_BUCKET}/
+
+      volumes:
+        - name: checkpoints
+          emptyDir:
+            sizeLimit: 100Gi
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi

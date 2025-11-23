@@ -1,0 +1,73 @@
+# Scale-to-Zero with KEDA
+#
+# Scale GPU workloads to zero when there's no traffic.
+# Requires KEDA: https://keda.sh
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-scale-to-zero
+  namespace: inference
+spec:
+  scaleTargetRef:
+    name: inference-deployment
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  idleReplicaCount: 0
+  cooldownPeriod: 600  # 10 minutes before scale down
+  pollingInterval: 30
+  triggers:
+    # Scale based on HTTP requests
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        metricName: http_requests_rate
+        query: |
+          sum(rate(http_requests_total{service="inference"}[5m]))
+        threshold: "1"
+        activationThreshold: "0.5"  # Scale from zero when > 0.5 req/s
+---
+# Alternative: Scale based on queue depth
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: inference-queue-based
+  namespace: inference
+spec:
+  scaleTargetRef:
+    name: inference-deployment
+  minReplicaCount: 0
+  maxReplicaCount: 10
+  idleReplicaCount: 0
+  cooldownPeriod: 300
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: inference-requests
+        host: amqp://rabbitmq.messaging.svc.cluster.local:5672
+        mode: QueueLength
+        value: "10"
+        activationValue: "1"
+---
+# For development namespaces - aggressive scale-to-zero
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: dev-inference-scale-to-zero
+  namespace: development
+spec:
+  scaleTargetRef:
+    name: dev-inference
+  minReplicaCount: 0
+  maxReplicaCount: 3
+  idleReplicaCount: 0
+  cooldownPeriod: 180  # 3 minutes - faster scale down for dev
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        metricName: http_requests_rate
+        query: |
+          sum(rate(http_requests_total{namespace="development",service="dev-inference"}[2m]))
+        threshold: "0.1"
+        activationThreshold: "0.01"

@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: inference
+  labels:
+    app: vllm
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: vllm
+  template:
+    metadata:
+      labels:
+        app: vllm
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      # GPU node scheduling
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: nvidia.com/gpu
+                    operator: In
+                    values:
+                      - "true"
+        # Spread across nodes for HA
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: vllm
+                topologyKey: kubernetes.io/hostname
+
+      # Graceful shutdown for in-flight requests
+      terminationGracePeriodSeconds: 300
+
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.4.0
+          args:
+            - --model
+            - mistralai/Mistral-7B-Instruct-v0.2
+            - --max-model-len
+            - "8192"
+            - --gpu-memory-utilization
+            - "0.9"
+            - --enable-prefix-caching
+            - --disable-log-requests
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+                  optional: true
+            # Disable tokenizer parallelism warnings
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: 1
+
+          # Readiness: wait for model to load (can take several minutes)
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 30
+
+          # Liveness: restart if unresponsive
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+
+          # Graceful shutdown
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 30
+
+          volumeMounts:
+            - name: cache
+              mountPath: /root/.cache/huggingface
+            - name: dshm
+              mountPath: /dev/shm
+
+      volumes:
+        # HuggingFace model cache
+        - name: cache
+          emptyDir:
+            sizeLimit: 50Gi
+        # Shared memory for PyTorch
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

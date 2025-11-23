@@ -1,0 +1,41 @@
+# NVIDIA Device Plugin Configuration for Time-Slicing
+#
+# Allows multiple pods to share a single GPU.
+# Good for development, not recommended for production inference.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvidia-device-plugin-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        renameByDefault: false
+        failRequestsGreaterThanOne: false
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 4
+---
+# Apply only to development nodes
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nvidia-device-plugin-config-dev
+  namespace: kube-system
+data:
+  config.yaml: |
+    version: v1
+    flags:
+      migStrategy: none
+    sharing:
+      timeSlicing:
+        renameByDefault: true  # Rename to nvidia.com/gpu.shared
+        failRequestsGreaterThanOne: false
+        resources:
+          - name: nvidia.com/gpu
+            replicas: 8  # More sharing for dev workloads

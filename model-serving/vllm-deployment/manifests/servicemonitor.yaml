@@ -1,0 +1,66 @@
+# ServiceMonitor for Prometheus Operator
+# Scrapes vLLM metrics for monitoring and autoscaling
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm
+  namespace: inference
+  labels:
+    app: vllm
+spec:
+  selector:
+    matchLabels:
+      app: vllm
+  namespaceSelector:
+    matchNames:
+      - inference
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+---
+# PrometheusRule for alerting
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vllm-alerts
+  namespace: inference
+  labels:
+    app: vllm
+spec:
+  groups:
+    - name: vllm
+      rules:
+        # Alert when queue is building up
+        - alert: VLLMHighQueueDepth
+          expr: sum(vllm:num_requests_waiting{namespace="inference"}) > 50
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "vLLM request queue is building up"
+            description: "{{ $value }} requests waiting in queue for more than 5 minutes"
+
+        # Alert when GPU cache is nearly full
+        - alert: VLLMHighCacheUsage
+          expr: avg(vllm:gpu_cache_usage_perc{namespace="inference"}) > 90
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "vLLM GPU cache usage is high"
+            description: "GPU cache usage at {{ $value }}%"
+
+        # Alert when pods are not ready
+        - alert: VLLMPodsNotReady
+          expr: |
+            kube_deployment_status_replicas_available{namespace="inference",deployment="vllm"}
+            < kube_deployment_spec_replicas{namespace="inference",deployment="vllm"}
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "vLLM pods not ready"
+            description: "Not all vLLM replicas are available"

@@ -1,0 +1,54 @@
+# KEDA ScaledObject - scales on request queue depth
+# Requires KEDA to be installed: https://keda.sh/docs/deploy/
+#
+# This is preferred over standard HPA for LLM workloads because:
+# 1. Queue depth is a leading indicator (CPU is lagging)
+# 2. Long-running requests mean CPU stays high even when queue is empty
+# 3. Model loading time means we need to scale early
+
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-scaledobject
+  namespace: inference
+spec:
+  scaleTargetRef:
+    name: vllm
+  minReplicaCount: 1
+  maxReplicaCount: 10
+  pollingInterval: 15
+  cooldownPeriod: 300    # 5 min cooldown before scale down
+  triggers:
+    # Scale based on pending requests
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        metricName: vllm_pending_requests
+        query: |
+          sum(vllm:num_requests_waiting{namespace="inference"})
+        threshold: "10"
+        activationThreshold: "5"
+    # Also consider running requests
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus-server.monitoring.svc.cluster.local:9090
+        metricName: vllm_running_requests
+        query: |
+          sum(vllm:num_requests_running{namespace="inference"})
+        threshold: "20"
+        activationThreshold: "10"
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Pods
+              value: 4
+              periodSeconds: 60

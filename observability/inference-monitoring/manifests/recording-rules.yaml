@@ -1,0 +1,89 @@
+# Recording Rules for Inference Metrics
+#
+# Pre-calculate common queries for dashboard efficiency and alerting.
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: inference-recording-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  groups:
+    - name: inference-recording
+      interval: 15s
+      rules:
+        # Throughput metrics
+        - record: inference:tokens_per_second
+          expr: sum(rate(vllm:generation_tokens_total[5m]))
+
+        - record: inference:prompt_tokens_per_second
+          expr: sum(rate(vllm:prompt_tokens_total[5m]))
+
+        - record: inference:requests_per_second
+          expr: sum(rate(vllm:request_latency_seconds_count[5m]))
+
+        # Latency metrics
+        - record: inference:ttft:p50
+          expr: |
+            histogram_quantile(0.5,
+              sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le))
+
+        - record: inference:ttft:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le))
+
+        - record: inference:ttft:p99
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(vllm:time_to_first_token_seconds_bucket[5m])) by (le))
+
+        - record: inference:latency:p50
+          expr: |
+            histogram_quantile(0.5,
+              sum(rate(vllm:request_latency_seconds_bucket[5m])) by (le))
+
+        - record: inference:latency:p95
+          expr: |
+            histogram_quantile(0.95,
+              sum(rate(vllm:request_latency_seconds_bucket[5m])) by (le))
+
+        - record: inference:latency:p99
+          expr: |
+            histogram_quantile(0.99,
+              sum(rate(vllm:request_latency_seconds_bucket[5m])) by (le))
+
+        # Queue metrics
+        - record: inference:queue_depth
+          expr: sum(vllm:num_requests_waiting)
+
+        - record: inference:running_requests
+          expr: sum(vllm:num_requests_running)
+
+        # Efficiency metrics
+        - record: inference:kv_cache_usage
+          expr: avg(vllm:gpu_cache_usage_perc)
+
+        - record: inference:batch_size:avg
+          expr: avg(vllm:num_requests_running)
+
+        - record: inference:preemption_rate
+          expr: sum(rate(vllm:num_preemptions_total[5m]))
+
+        # SLO tracking
+        - record: inference:slo:latency_5s_ratio
+          expr: |
+            sum(rate(vllm:request_latency_seconds_bucket{le="5"}[5m])) /
+            sum(rate(vllm:request_latency_seconds_count[5m]))
+
+        - record: inference:slo:ttft_500ms_ratio
+          expr: |
+            sum(rate(vllm:time_to_first_token_seconds_bucket{le="0.5"}[5m])) /
+            sum(rate(vllm:time_to_first_token_seconds_count[5m]))
+
+        - record: inference:slo:ttft_1s_ratio
+          expr: |
+            sum(rate(vllm:time_to_first_token_seconds_bucket{le="1"}[5m])) /
+            sum(rate(vllm:time_to_first_token_seconds_count[5m]))

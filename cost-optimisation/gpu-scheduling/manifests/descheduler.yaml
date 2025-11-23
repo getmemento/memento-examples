@@ -1,0 +1,102 @@
+# Descheduler for GPU workload rebalancing
+#
+# Periodically moves pods to improve node utilisation
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: descheduler-policy
+  namespace: kube-system
+data:
+  policy.yaml: |
+    apiVersion: descheduler/v1alpha2
+    kind: DeschedulerPolicy
+    profiles:
+      - name: gpu-rebalance
+        pluginConfig:
+          - name: LowNodeUtilization
+            args:
+              thresholds:
+                cpu: 20
+                memory: 20
+              targetThresholds:
+                cpu: 50
+                memory: 50
+              # Note: GPU utilisation is hard to measure accurately
+              # Use with caution for GPU workloads
+          - name: RemovePodsViolatingNodeAffinity
+            args:
+              nodeAffinityType:
+                - requiredDuringSchedulingIgnoredDuringExecution
+        plugins:
+          balance:
+            enabled:
+              - LowNodeUtilization
+          deschedule:
+            enabled:
+              - RemovePodsViolatingNodeAffinity
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: descheduler
+  namespace: kube-system
+spec:
+  schedule: "*/30 * * * *"  # Every 30 minutes
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: descheduler
+          containers:
+            - name: descheduler
+              image: registry.k8s.io/descheduler/descheduler:v0.28.1
+              args:
+                - --policy-config-file=/policy/policy.yaml
+                - --v=3
+              volumeMounts:
+                - name: policy
+                  mountPath: /policy
+          volumes:
+            - name: policy
+              configMap:
+                name: descheduler-policy
+          restartPolicy: Never
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: descheduler
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: descheduler
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: ["scheduling.k8s.io"]
+    resources: ["priorityclasses"]
+    verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: descheduler
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: descheduler
+subjects:
+  - kind: ServiceAccount
+    name: descheduler
+    namespace: kube-system

@@ -1,0 +1,112 @@
+# Prometheus Recording and Alerting Rules for GPU Metrics
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-rules
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  groups:
+    # Recording rules for pre-calculated metrics
+    - name: gpu-recording
+      rules:
+        - record: gpu:utilization:cluster_avg
+          expr: avg(DCGM_FI_DEV_GPU_UTIL{job="dcgm-exporter"})
+
+        - record: gpu:utilization:by_node
+          expr: avg by (node) (DCGM_FI_DEV_GPU_UTIL{job="dcgm-exporter"})
+
+        - record: gpu:memory:used_percent
+          expr: |
+            100 * DCGM_FI_DEV_FB_USED /
+            (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE)
+
+        - record: gpu:memory:cluster_used_gb
+          expr: sum(DCGM_FI_DEV_FB_USED) / 1024
+
+        - record: gpu:power:cluster_watts
+          expr: sum(DCGM_FI_DEV_POWER_USAGE)
+
+        - record: gpu:count:total
+          expr: count(DCGM_FI_DEV_GPU_UTIL)
+
+        - record: gpu:count:active
+          expr: count(DCGM_FI_DEV_GPU_UTIL > 10)
+
+    # Alerting rules
+    - name: gpu-alerts
+      rules:
+        - alert: GPUHighTemperature
+          expr: DCGM_FI_DEV_GPU_TEMP > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU {{ $labels.gpu }} on {{ $labels.node }} is {{ $value }}°C"
+            description: "GPU temperature has been above 80°C for 5 minutes"
+            runbook_url: "https://docs.example.com/runbooks/gpu-high-temp"
+
+        - alert: GPUCriticalTemperature
+          expr: DCGM_FI_DEV_GPU_TEMP > 90
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} temperature critical at {{ $value }}°C"
+            description: "GPU may throttle or shutdown. Immediate attention required."
+
+        - alert: GPUMemoryNearlyFull
+          expr: gpu:memory:used_percent > 95
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} memory at {{ $value }}%"
+            description: "GPU memory nearly exhausted, OOM likely"
+
+        - alert: GPUMemoryHigh
+          expr: gpu:memory:used_percent > 85
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU {{ $labels.gpu }} memory at {{ $value }}%"
+            description: "GPU memory usage is high"
+
+        - alert: GPULowUtilisation
+          expr: |
+            avg_over_time(DCGM_FI_DEV_GPU_UTIL[2h]) < 20
+          for: 2h
+          labels:
+            severity: info
+          annotations:
+            summary: "GPU {{ $labels.gpu }} underutilised ({{ $value }}%)"
+            description: "GPU has been below 20% utilisation for 2 hours"
+
+        - alert: GPUXidErrors
+          expr: increase(DCGM_FI_DEV_XID_ERRORS[10m]) > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU {{ $labels.gpu }} XID errors detected"
+            description: "XID errors indicate hardware or driver issues"
+
+        - alert: GPUPowerLimitThrottling
+          expr: DCGM_FI_DEV_POWER_VIOLATION > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU {{ $labels.gpu }} power throttling"
+            description: "GPU is throttling due to power limits"
+
+        - alert: NoGPUMetrics
+          expr: absent(DCGM_FI_DEV_GPU_UTIL)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No GPU metrics being collected"
+            description: "DCGM exporter may be down or no GPU nodes available"

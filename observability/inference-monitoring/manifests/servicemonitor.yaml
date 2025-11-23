@@ -1,0 +1,48 @@
+# ServiceMonitor for vLLM inference metrics
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: vllm-inference
+  namespace: inference
+  labels:
+    app: vllm
+spec:
+  selector:
+    matchLabels:
+      app: vllm
+  namespaceSelector:
+    matchNames:
+      - inference
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      metricRelabelings:
+        # Add model name label from deployment
+        - sourceLabels: [__name__]
+          regex: 'vllm.*'
+          targetLabel: workload
+          replacement: 'inference'
+---
+# ServiceMonitor for TGI (if used)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: tgi-inference
+  namespace: inference
+  labels:
+    app: tgi
+spec:
+  selector:
+    matchLabels:
+      app: tgi
+  namespaceSelector:
+    matchNames:
+      - inference
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s

@@ -1,0 +1,89 @@
+# Inference Deployment on Spot Instances
+#
+# Runs on spot nodes with proper interruption handling.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference-spot
+  namespace: inference
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: inference-spot
+  template:
+    metadata:
+      labels:
+        app: inference-spot
+        capacity-type: spot
+    spec:
+      # Tolerate spot and GPU taints
+      tolerations:
+        - key: capacity-type
+          operator: Equal
+          value: spot
+          effect: NoSchedule
+        - key: nvidia.com/gpu
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+      # Must schedule on spot nodes
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: capacity-type
+                    operator: In
+                    values:
+                      - spot
+                  - key: nvidia.com/gpu
+                    operator: In
+                    values:
+                      - "true"
+        # Spread across nodes
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: inference-spot
+                topologyKey: kubernetes.io/hostname
+
+      # Allow time for graceful shutdown
+      terminationGracePeriodSeconds: 120
+
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.4.0
+          args:
+            - --model
+            - mistralai/Mistral-7B-Instruct-v0.2
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "8"
+              memory: "32Gi"
+              nvidia.com/gpu: 1
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 120
+            periodSeconds: 10
+          # Graceful shutdown on spot termination
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 30

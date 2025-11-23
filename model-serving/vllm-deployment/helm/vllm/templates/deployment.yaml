@@ -1,0 +1,125 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vllm.fullname" . }}
+  labels:
+    {{- include "vllm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "vllm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm.selectorLabels" . | nindent 8 }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- if .Values.gpu.tolerations }}
+      tolerations:
+        {{- toYaml .Values.gpu.tolerations | nindent 8 }}
+      {{- end }}
+      {{- if or .Values.gpu.affinity .Values.podAntiAffinity.enabled }}
+      affinity:
+        {{- if .Values.gpu.affinity }}
+        {{- toYaml .Values.gpu.affinity | nindent 8 }}
+        {{- end }}
+        {{- if .Values.podAntiAffinity.enabled }}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "vllm.selectorLabels" . | nindent 20 }}
+                topologyKey: {{ .Values.podAntiAffinity.topologyKey }}
+        {{- end }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: vllm
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --model
+            - {{ .Values.model.name }}
+            - --max-model-len
+            - "{{ .Values.model.maxModelLen }}"
+            - --gpu-memory-utilization
+            - "{{ .Values.model.gpuMemoryUtilization }}"
+            {{- if gt (int .Values.model.tensorParallelSize) 1 }}
+            - --tensor-parallel-size
+            - "{{ .Values.model.tensorParallelSize }}"
+            {{- end }}
+            {{- if .Values.model.quantization }}
+            - --quantization
+            - {{ .Values.model.quantization }}
+            {{- end }}
+            {{- if .Values.model.enablePrefixCaching }}
+            - --enable-prefix-caching
+            {{- end }}
+            - --disable-log-requests
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            {{- if or .Values.huggingfaceToken.existingSecret }}
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.huggingfaceToken.existingSecret | default (printf "%s-hf-token" (include "vllm.fullname" .)) }}
+                  key: {{ .Values.huggingfaceToken.secretKey }}
+                  optional: true
+            {{- end }}
+            - name: TOKENIZERS_PARALLELISM
+              value: "false"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep {{ .Values.preStopSleepSeconds }}
+          volumeMounts:
+            {{- if .Values.storage.cache.enabled }}
+            - name: cache
+              mountPath: /root/.cache/huggingface
+            {{- end }}
+            {{- if .Values.storage.sharedMemory.enabled }}
+            - name: dshm
+              mountPath: /dev/shm
+            {{- end }}
+      volumes:
+        {{- if .Values.storage.cache.enabled }}
+        - name: cache
+          emptyDir:
+            sizeLimit: {{ .Values.storage.cache.size }}
+        {{- end }}
+        {{- if .Values.storage.sharedMemory.enabled }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.storage.sharedMemory.size }}
+        {{- end }}

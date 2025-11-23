@@ -1,0 +1,13 @@
+apiVersion: v2
+name: vllm
+description: Production-ready vLLM deployment for LLM inference
+type: application
+version: 1.0.0
+appVersion: "0.4.0"
+keywords:
+  - llm
+  - inference
+  - vllm
+  - gpu
+maintainers:
+  - name: Memento

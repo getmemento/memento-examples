@@ -1,0 +1,78 @@
+# AWS Node Termination Handler
+#
+# Detects EC2 spot interruptions and maintenance events.
+# Cordons and drains nodes before termination.
+#
+# Install via Helm:
+# helm repo add eks https://aws.github.io/eks-charts
+# helm install aws-node-termination-handler eks/aws-node-termination-handler -f values.yaml
+
+# Values for Helm installation
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nth-helm-values
+  namespace: kube-system
+data:
+  values.yaml: |
+    # Enable spot interruption handling
+    enableSpotInterruptionDraining: true
+
+    # Enable scheduled event handling (maintenance)
+    enableScheduledEventDraining: true
+
+    # Enable rebalance recommendation handling
+    enableRebalanceMonitoring: true
+    enableRebalanceDraining: true
+
+    # Webhook for notifications (optional)
+    webhookURL: ""
+
+    # Pod termination grace period
+    podTerminationGracePeriod: 120
+
+    # Node termination grace period
+    nodeTerminationGracePeriod: 120
+
+    # Delete local data (emptyDir volumes)
+    deleteLocalData: true
+
+    # Ignore daemon sets when draining
+    ignoreDaemonSets: true
+
+    # Taint nodes on interruption
+    taintNode: true
+
+    # Prometheus metrics
+    enablePrometheusServer: true
+    prometheusServerPort: 9092
+
+    # Resources
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 100m
+        memory: 128Mi
+
+    # Node selector - run on all nodes
+    nodeSelector: {}
+
+    # Tolerations - tolerate all taints
+    tolerations:
+      - operator: Exists
+---
+# ServiceMonitor for Prometheus metrics
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: aws-node-termination-handler
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aws-node-termination-handler
+  endpoints:
+    - port: http-metrics
+      interval: 30s

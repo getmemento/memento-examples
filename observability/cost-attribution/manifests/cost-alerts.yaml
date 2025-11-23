@@ -1,0 +1,109 @@
+# Cost Alerting Rules
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cost-alerts
+  namespace: monitoring
+  labels:
+    app: prometheus
+spec:
+  groups:
+    - name: cost-budget-alerts
+      rules:
+        # Cluster-wide alerts
+        - alert: HighTotalGPUSpend
+          expr: cost:gpu_total_monthly_projection > 50000
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Projected monthly GPU spend is £{{ $value | humanize }}"
+            description: "Current usage projects to over £50k/month"
+
+        - alert: CriticalGPUSpend
+          expr: cost:gpu_total_monthly_projection > 100000
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: "GPU spend projection critical: £{{ $value | humanize }}/month"
+            description: "Immediate review required"
+
+        # Team-level alerts
+        - alert: TeamOverBudget
+          expr: cost:gpu_monthly_projection:by_team > 10000
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Team {{ $labels.team }} projected at £{{ $value | humanize }}/month"
+            description: "Team GPU spend exceeds £10k/month threshold"
+
+        # Namespace-level alerts
+        - alert: NamespaceHighSpend
+          expr: cost:gpu_monthly_projection:by_namespace > 5000
+          for: 2h
+          labels:
+            severity: info
+          annotations:
+            summary: "Namespace {{ $labels.namespace }} at £{{ $value | humanize }}/month"
+            description: "Review namespace resource usage"
+
+    - name: cost-efficiency-alerts
+      rules:
+        # High idle cost
+        - alert: HighIdleGPUCost
+          expr: |
+            (sum(cost:gpu_idle_hourly:by_namespace) / sum(cost:gpu_estimated_hourly:by_namespace)) > 0.5
+          for: 4h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Over 50% of GPU spend is idle"
+            description: "GPUs are allocated but underutilised"
+
+        - alert: NamespaceHighIdleCost
+          expr: cost:gpu_idle_percent:by_namespace > 0.7
+          for: 4h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Namespace {{ $labels.namespace }} has 70%+ idle GPUs"
+            description: "Consider scaling down or optimising workloads"
+
+        # High cost per token
+        - alert: HighCostPerToken
+          expr: cost:per_1k_tokens:by_namespace > 0.10
+          for: 2h
+          labels:
+            severity: info
+          annotations:
+            summary: "High cost per 1k tokens in {{ $labels.namespace }}"
+            description: "Cost is £{{ $value }} per 1000 tokens"
+
+    - name: cost-anomaly-alerts
+      rules:
+        # Sudden spend increase
+        - alert: SuddenSpendIncrease
+          expr: |
+            (cost:gpu_total_hourly - cost:gpu_total_hourly offset 1d) /
+            cost:gpu_total_hourly offset 1d > 0.5
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "GPU spend increased 50%+ vs yesterday"
+            description: "Review recent changes and deployments"
+
+        # New namespace with GPU usage
+        - alert: NewNamespaceGPUUsage
+          expr: |
+            cost:gpu_hours:by_namespace > 0
+            unless cost:gpu_hours:by_namespace offset 1d > 0
+          for: 1h
+          labels:
+            severity: info
+          annotations:
+            summary: "New GPU usage in namespace {{ $labels.namespace }}"
+            description: "First GPU usage detected in this namespace"
